@@ -1,21 +1,21 @@
 #! /usr/bin/env node
 
-// bootstrap-tool.mjs
+/**
+ * bootstrap-tool.mjs
+ *
+ * Usage: bootstrap-tool [project]
+ */
 
+
+import { Command } from 'commander';
 import { $, argv, cd, chalk, fs, question } from "zx";
-
 import path from "path";
-
 import which from "which";
 
 function exitWithError(errorMessage) {
   console.error(chalk.red(errorMessage));
   process.exit(1);
 }
-
-/**
- * Check for programs required by this script.
- */
 
 async function checkRequiredProgramsExist(programs) {
   try {
@@ -27,28 +27,21 @@ async function checkRequiredProgramsExist(programs) {
   }
 }
 
-await checkRequiredProgramsExist(["git", "node", "npx"]);
-
-/**
- * Check for and change to target directory.
- */
-
-let targetDirectory = argv.directory;
-if (!targetDirectory) {
-  exitWithError("Error: You must specify the --directory argument");
+function isEmpty(path) {
+	return fs.readdirSync(path).length === 0;
 }
 
-targetDirectory = path.resolve(targetDirectory);
-
-if (!(await fs.pathExists(targetDirectory))) {
-  exitWithError(`Error: Target directory '${targetDirectory}' does not exist`);
+async function prepareDirectory(project) {
+	const targetDir = path.resolve(project);
+	if ((await fs.pathExists(targetDir))) {
+		if (!isEmpty(targetDir)) {
+			exitWithError(`${targetDir} is not empty!`)
+		}
+	} else {
+		await fs.mkdirSync(targetDir, { recursive: true });
+	}
+	return targetDir;
 }
-
-cd(targetDirectory);
-
-/**
- * Check global git settings.
- */
 
 async function getGlobalGitSettingValue(settingName) {
   $.verbose = false;
@@ -78,173 +71,89 @@ async function checkGlobalGitSettings(settingsToCheck) {
   }
 }
 
-await checkGlobalGitSettings(["user.name", "user.email"]);
-
-/**
- * Initialise a new git repository.
- */
-
-await $`git init`;
-
-/**
- * Generate a package.json file.
- */
-
-async function readPackageJson(directory) {
-  const packageJsonFilepath = `${directory}/package.json`;
+async function readPackageJson(dir) {
+  const packageJsonFilepath = `${dir}/package.json`;
 
   return await fs.readJSON(packageJsonFilepath);
 }
 
-async function writePackageJson(directory, contents) {
-  const packageJsonFilepath = `${directory}/package.json`;
+async function writePackageJson(dir, contents) {
+  const packageJsonFilepath = `${dir}/package.json`;
 
   await fs.writeJSON(packageJsonFilepath, contents, { spaces: 2 });
 }
 
-async function promptForModuleSystem(moduleSystems) {
-  const moduleSystem = await question(
-    `Which Node.js module system do you want to use? (${moduleSystems.join(
-      " or "
-    )}) `,
-    {
-      choices: moduleSystems,
-    }
-  );
-
-  return moduleSystem;
+async function createReadme(dir) {
+	const { name: projectName } = await readPackageJson(dir);
+	const readmeContents = `# ${projectName}\n\n...\n`;
+	await fs.writeFile(`${dir}/README.md`, readmeContents);
 }
 
-async function getNodeModuleSystem() {
-  const moduleSystems = ["module", "commonjs"];
-  const selectedModuleSystem = await promptForModuleSystem(moduleSystems);
-
-  const isValidModuleSystem = moduleSystems.includes(selectedModuleSystem);
-  if (!isValidModuleSystem) {
-    console.error(
-      chalk.red(
-        `Error: Module system must be either '${moduleSystems.join(
-          "' or '"
-        )}'\n`
-      )
-    );
-
-    return await getNodeModuleSystem();
-  }
-
-  return selectedModuleSystem;
+async function initGit(gitignore) {
+	await checkGlobalGitSettings(["user.name", "user.email"]);
+	await $`git init`;
+	if (gitignore) {
+		await $`npx gitignore node`;
+	}
+	await $`git add .`;
+	await $`git commit -m "bootstrapped"`;
 }
 
-await $`npm init --yes`;
-
-const packageJson = await readPackageJson(targetDirectory);
-const selectedModuleSystem = await getNodeModuleSystem();
-
-packageJson.type = selectedModuleSystem;
-
-await writePackageJson(targetDirectory, packageJson);
-
-/**
- * Install required project dependencies.
- */
-
-async function promptForPackages() {
-  let packagesToInstall = await question(
-    "Which npm packages do you want to install for this project? "
-  );
-
-  packagesToInstall = packagesToInstall
-    .trim()
-    .split(" ")
-    .filter((pkg) => pkg);
-
-  return packagesToInstall;
+async function bootstrap(options) {
+	await checkRequiredProgramsExist(["git", "node", "npx"]);
+	const dir = await prepareDirectory(options.dir);
+	cd(dir);
+	await $`npm init --yes`;
+	const packageJson = await readPackageJson(dir);
+	packageJson.name = options.name ? options.name : packageJson.name;
+	packageJson.version = options.version ? options.version : packageJson.version;
+	packageJson.type = options.type;
+	await writePackageJson(dir, packageJson);
+	if (options.packages.length > 0) {
+		await $`npm install ${options.packages}`;
+	}
+	if (options.editorconfig) {
+		await $`npx mrm editorconfig`;
+	}
+	if (options.prettier) {
+		await $`npx mrm prettier`;
+	}
+	if (options.eslint) {
+		await $`npx mrm eslint`;
+	}
+	if (options.readme) {
+		await createReadme(dir)
+	}
+	if (options.git) {
+		await initGit(options.gitignore);
+	}
+	console.log(
+		chalk.green(
+			`\n✔️ The project ${packageJson.name} has been bootstrapped!\n`
+		)
+	);
+	if (options.git) {
+		console.log(chalk.green(`Add a git remote and push your changes.`));
+	}
 }
 
-async function identifyInvalidNpmPackages(packages) {
-  $.verbose = false;
+const program = new Command()
+	.name('bootstrap-tool')
+	.version('0.0.1')
+	.description('Bootstrap a node project')
+	.addHelpCommand(true)
+	.helpOption(true)
+	.option('-d, --dir [directory]', 'directory', ".")
+	.option('-n, --name [package-name]', 'package-name (defaults to directory name)')
+	.option('-v, --verion [version]', 'version (defaults to 1.0.0)')
+	.option('--packages [packages...]', 'specify packages', [])
+	.option('--type [module-system]', 'module or commonjs', "module")
+	.option('--no-editorconfig', 'no editorconfig')
+	.option('--no-eslint', 'no eslint')
+	.option('--no-readme', 'no README.md')
+	.option('--no-git', 'no git')
+	.option('--no-gitignore', 'no gitignore')
+	.option('--no-prettier', 'no prettier')
+	.action(bootstrap);
 
-  let invalidPackages = [];
-  for (const pkg of packages) {
-    try {
-      await $`npm view ${pkg}`;
-    } catch (error) {
-      invalidPackages.push(pkg);
-    }
-  }
-
-  $.verbose = true;
-
-  return invalidPackages;
-}
-
-async function getPackagesToInstall() {
-  const packagesToInstall = await promptForPackages();
-  const invalidPackages = await identifyInvalidNpmPackages(packagesToInstall);
-
-  const allPackagesExist = invalidPackages.length === 0;
-  if (!allPackagesExist) {
-    console.error(
-      chalk.red(
-        `Error: The following packages do not exist on npm: ${invalidPackages.join(
-          ", "
-        )}\n`
-      )
-    );
-
-    return await getPackagesToInstall();
-  }
-
-  return packagesToInstall;
-}
-
-const packagesToInstall = await getPackagesToInstall();
-const havePackagesToInstall = packagesToInstall.length > 0;
-if (havePackagesToInstall) {
-  await $`npm install ${packagesToInstall}`;
-}
-
-/**
- * Generate a .gitignore file.
- */
-
-await $`npx gitignore node`;
-
-/**
- * Generate EditorConfig, Prettier and ESLint configuration files.
- */
-
-await $`npx mrm editorconfig`;
-await $`npx mrm prettier`;
-await $`npx mrm eslint`;
-
-/**
- * Generate a basic README.
- */
-
-const { name: projectName } = await readPackageJson(targetDirectory);
-const readmeContents = `# ${projectName}
-
-...
-`;
-
-await fs.writeFile(`${targetDirectory}/README.md`, readmeContents);
-
-/**
- * Commit the project skeleton to git.
- */
-
-await $`git add .`;
-await $`git commit -m "Add project skeleton"`;
-
-/**
- * Confirm bootstrapping of the new project has completed successfully.
- */
-
-console.log(
-  chalk.green(
-    `\n✔️ The project ${projectName} has been successfully bootstrapped!\n`
-  )
-);
-console.log(chalk.green(`Add a git remote and push your changes.`));
-
+await program.parseAsync(process.argv);
