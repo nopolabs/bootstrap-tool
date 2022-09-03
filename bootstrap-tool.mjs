@@ -7,7 +7,7 @@
  */
 
 
-import { Command } from 'commander';
+import { Command, Argument } from 'commander';
 import { $, argv, cd, chalk, fs, question } from "zx";
 import path from "path";
 import which from "which";
@@ -99,9 +99,9 @@ async function initGit(gitignore) {
 	await $`git commit -m "bootstrapped"`;
 }
 
-async function bootstrap(options) {
+async function bootstrap(directory, options) {
 	await checkRequiredProgramsExist(["git", "node", "npx"]);
-	const dir = await prepareDirectory(options.dir);
+	const dir = await prepareDirectory(directory);
 	cd(dir);
 	await $`npm init --yes`;
 	const packageJson = await readPackageJson(dir);
@@ -143,7 +143,7 @@ const program = new Command()
 	.description('Bootstrap a node project')
 	.addHelpCommand(true)
 	.helpOption(true)
-	.option('-d, --dir [directory]', 'directory', ".")
+	.addArgument(new Argument('[directory]', 'directory').default('.', 'current directory'))
 	.option('-n, --name [package-name]', 'package-name (defaults to directory name)')
 	.option('-v, --verion [version]', 'version (defaults to 1.0.0)')
 	.option('--packages [packages...]', 'specify packages', [])
